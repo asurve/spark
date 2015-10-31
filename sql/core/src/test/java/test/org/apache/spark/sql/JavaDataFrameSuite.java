@@ -247,6 +247,13 @@ public class JavaDataFrameSuite {
   }
 
   @Test
+  public void testSpearmanCorrelation() {
+    DataFrame df = context.table("testData2");
+    Double spearmanCorr = df.stat().corr("a", "b", "spearman");
+    Assert.assertTrue(Math.abs(spearmanCorr-0.1571428572) < 1.0e-6);
+  }
+
+  @Test
   public void testCovariance() {
     DataFrame df = context.table("testData2");
     Double result = df.stat().cov("a", "b");

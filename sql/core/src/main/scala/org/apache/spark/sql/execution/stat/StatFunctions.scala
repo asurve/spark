@@ -18,6 +18,7 @@
 package org.apache.spark.sql.execution.stat
 
 import org.apache.spark.Logging
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Row, Column, DataFrame}
 import org.apache.spark.sql.catalyst.expressions.{GenericMutableRow, Cast}
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
@@ -31,6 +32,11 @@ private[sql] object StatFunctions extends Logging {
   private[sql] def pearsonCorrelation(df: DataFrame, cols: Seq[String]): Double = {
     val counts = collectStatisticalData(df, cols)
     counts.Ck / math.sqrt(counts.MkX * counts.MkY)
+  }
+
+  /** Calculate the Spearman Correlation Coefficient for the given columns */
+  private[sql] def spearmanCorrelation(df: DataFrame, cols: Seq[String]): Double = {
+    computeSpearmanCorrCoeff(df, cols)
   }
 
   /** Helper class to simplify tracking and merging counts. */
@@ -91,6 +97,20 @@ private[sql] object StatFunctions extends Logging {
     })
   }
 
+  private def computeSpearmanCorrCoeff(df: DataFrame, cols: Seq[String]): Double = {
+    require(cols.length == 2, "Currently cov supports calculating the covariance " +
+      "between two columns.")
+    cols.map(name => (name, df.schema.fields.find(_.name == name))).foreach { case (name, data) =>
+      require(data.nonEmpty, s"Couldn't find column with name $name")
+      require(data.get.dataType.isInstanceOf[NumericType], "Covariance calculation for columns " +
+        s"with dataType ${data.get.dataType} not supported.")
+    }
+    val columns = cols.map(n => Column(Cast(Column(n).expr, DoubleType)))
+    val rddData = df.sqlContext.sparkContext.parallelize(df.select(columns: _*).map(t => (t.get(0), t.get(1))).collect())
+
+    computeSpearmanCorrCoeff(rddData)
+  }
+
   /**
    * Calculate the covariance of two numerical columns of a DataFrame.
    * @param df The DataFrame
@@ -146,4 +166,39 @@ private[sql] object StatFunctions extends Logging {
 
     new DataFrame(df.sqlContext, LocalRelation(schema.toAttributes, table)).na.fill(0.0)
   }
+
+  // This function will calculate Spearman's rank correlation coefficient
+  // Reference: https://en.wikipedia.org/wiki/Spearman%27s_rank_correlation_coefficient
+  def computeSpearmanCorrCoeff(rddData: RDD[(Any, Any)]): Double = {
+
+    //Calculate Rank for first vector data.
+    val rddData1Rank = rddData.zipWithIndex()
+      .map{case ((a,b),c) => (a.asInstanceOf[Double],c)}
+      .sortByKey()
+      .zipWithIndex()
+      .map{case((a,b),c)=> (a,((c+1.0),1.0))}
+      .reduceByKey{case(a,b) => (((a._1*a._2+b._1*b._2)/(a._2+b._2),(a._2 + b._2 )))}
+      .map { case (a,(b,c)) => (a,b)}
+
+    //Calculate Rank for second vector data.
+    val rddData2Rank = rddData.zipWithIndex()
+      .map{case ((a,b),c) => (b.asInstanceOf[Double],c)}
+      .sortByKey()
+      .zipWithIndex()
+      .map{case((a,b),c)=> (a,((c+1.0),1.0))}
+      .reduceByKey{case(a,b) => (((a._1*a._2+b._1*b._2)/(a._2+b._2),(a._2 + b._2 )))}
+      .map { case (a,(b,c)) => (a,b)}
+
+    //Calculate sum of square of diffrence of ranks between two vector corresponding elements in original order.
+    val sumSqRankDiff = rddData.map{case (a,b) => (a.asInstanceOf[Double], b.asInstanceOf[Double])}
+      .join(rddData1Rank).map{case (a,(b,c)) => (b, (a, c))}
+      .join(rddData2Rank).map{case (a,((b,c),d)) => (d-c)*(d-c)}.sum()
+
+    //Length of vector.
+    val dataLen = rddData.count()
+
+    // Return Spearman's rank correlation coefficient.
+    1 - (6 * sumSqRankDiff)/(dataLen*(dataLen*dataLen -1))
+  }
+
 }

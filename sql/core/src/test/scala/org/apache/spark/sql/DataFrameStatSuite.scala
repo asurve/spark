@@ -85,6 +85,17 @@ class DataFrameStatSuite extends QueryTest with SharedSQLContext {
     assert(math.abs(corr3 - 0.95723391394758572) < 1e-12)
   }
 
+  test("spearman correlation") {
+    val df = Seq.tabulate(10)(i => (i, 2 * i, i * -1.0)).toDF("a", "b", "c")
+    val corr1 = df.stat.corr("a", "b", "spearman")
+    assert(math.abs(corr1 - 1.0) < 1e-12)
+    val corr2 = df.stat.corr("a", "c", "spearman")
+    assert(math.abs(corr2 + 1.0) < 1e-12)
+    val df2 = Seq.tabulate(20)(x => (x, x * x - 2 * x + 3.5)).toDF("a", "b")
+    val corr3 = df2.stat.corr("a", "b", "spearman")
+    assert(math.abs(corr3 - 0.9973684210526316) < 1e-12)
+  }
+
   test("covariance") {
     val df = Seq.tabulate(10)(i => (i, 2.0 * i, toLetter(i))).toDF("singles", "doubles", "letters")
 
