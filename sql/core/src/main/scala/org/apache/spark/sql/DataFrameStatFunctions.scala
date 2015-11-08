@@ -71,9 +71,12 @@ final class DataFrameStatFunctions private[sql](df: DataFrame) {
    * @since 1.4.0
    */
   def corr(col1: String, col2: String, method: String): Double = {
-    require(method == "pearson", "Currently only the calculation of the Pearson Correlation " +
+    require(method == "pearson" || method == "spearman", "Currently only the calculation of the Pearson and Spearman Correlation " +
       "coefficient is supported.")
-    StatFunctions.pearsonCorrelation(df, Seq(col1, col2))
+    method match {
+      case "pearson" => StatFunctions.pearsonCorrelation (df, Seq (col1, col2) )
+      case "spearman" => StatFunctions.spearmanCorrelation (df, Seq (col1, col2) )
+    }
   }
 
   /**

@@ -18,6 +18,7 @@
 package org.apache.spark.sql.execution.stat
 
 import org.apache.spark.Logging
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Row, Column, DataFrame}
 import org.apache.spark.sql.catalyst.expressions.{GenericMutableRow, Cast}
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
@@ -31,6 +32,11 @@ private[sql] object StatFunctions extends Logging {
   private[sql] def pearsonCorrelation(df: DataFrame, cols: Seq[String]): Double = {
     val counts = collectStatisticalData(df, cols)
     counts.Ck / math.sqrt(counts.MkX * counts.MkY)
+  }
+
+  /** Calculate the Spearman Correlation Coefficient for the given columns */
+  private[sql] def spearmanCorrelation(df: DataFrame, cols: Seq[String]): Double = {
+    computeSpearmanCorrCoeff(df, cols)
   }
 
   /** Helper class to simplify tracking and merging counts. */
@@ -146,4 +152,51 @@ private[sql] object StatFunctions extends Logging {
 
     new DataFrame(df.sqlContext, LocalRelation(schema.toAttributes, table)).na.fill(0.0)
   }
+  // This function will calculate Spearman's rank correlation coefficient
+  // Reference: https://en.wikipedia.org/wiki/Spearman%27s_rank_correlation_coefficient
+  private def computeSpearmanCorrCoeff(df: DataFrame, cols: Seq[String]): Double = {
+    require(cols.length == 2, "Currently cov supports calculating the covariance " +
+      "between two columns.")
+    cols.map(name => (name, df.schema.fields.find(_.name == name))).foreach { case (name, data) =>
+      require(data.nonEmpty, s"Couldn't find column with name $name")
+      require(data.get.dataType.isInstanceOf[NumericType], "Covariance calculation for columns " +
+        s"with dataType ${data.get.dataType} not supported.")
+    }
+
+    // Define column types.
+    val colTypes = cols.map(n => Column(Cast(Column(n).expr, DoubleType)))
+    var dfData = df.select(colTypes: _*).map(row => (row.getDouble(0), row.getDouble(1)))
+    //Calculate Rank for the first column data.
+    val data1Rank = getRank(dfData, true)
+    //Calculate Rank for the second column data.
+    val data2Rank = getRank(dfData, false)
+    //Calculate sum of square of diffrence of ranks between two vector corresponding elements in original order.
+    val sumSqRankDiffAndCnt = getSumSqRankDiffAndCount (dfData, data1Rank, data2Rank)
+    //Length of vector.
+    val dataLen = sumSqRankDiffAndCnt._2
+    // Return Spearman's rank correlation coefficient.
+    1 - (6 * sumSqRankDiffAndCnt._1)/(dataLen*(dataLen*dataLen -1))
+  }
+
+  // This function will calculate rank for one of two columns.
+  private def getRank(dfData:RDD[(Double, Double)], bFirstCol:Boolean) : RDD[(Double, Double)] = {
+    //Calculate Rank for first column data.
+    dfData.map{case (( col1, col2)) => if(bFirstCol) (col1,1.0) else (col2, 1.0)}
+      .sortByKey()
+      .zipWithIndex()
+      .map{case((col1,dummy),ind)=> (col1,((ind+1.0),1.0))}
+      .reduceByKey{case((pos1, cnt1),(pos2, cnt2)) => (((pos1*cnt1+pos2*cnt2)/(cnt1+cnt2),(cnt1 + cnt2 )))}
+      .map { case (col1,(rank1,cnt)) => (col1,rank1)}
+  }
+
+  // This will compute sum of square for difference in rank for corresponding ranks for individual elements, and total elements.
+  private def getSumSqRankDiffAndCount(dfData:RDD[(Double, Double)],
+                                       data1Rank:RDD[(Double, Double)],
+                                       data2Rank:RDD[(Double, Double)]): (Double, Double) = {
+    dfData.map{case (col1,col2) => (col1, col2)}
+      .join(data1Rank).map{case (col1,(col2,rank1)) => (col2, (col1, rank1))}
+      .join(data2Rank).map{case (col2,((col1,rank1),rank2)) => (((rank2-rank1)*(rank2-rank1)),1.0)}
+      .reduce{case ((sqRankDiff1,cnt1),(sqRankDiff2,cnt2)) => (sqRankDiff1+sqRankDiff2, cnt1+cnt2)}
+  }
+
 }
